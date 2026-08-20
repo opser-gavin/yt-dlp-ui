@@ -74,8 +74,8 @@ pyinstaller build.spec
 也可以先解析视频，选择想要的 画质、音轨、
 <img width="1067" height="747" alt="image" src="https://github.com/user-attachments/assets/eb9745aa-cc6d-4fc3-a7b6-065063c478c7" />
 cookie可以选择：
-1 chrome等浏览器（这个要关闭浏览器要不会报错，因为chrome运行时会锁定cookie数据库）
-2 用cookie保存插件（比如Get cookies.txt LOCALLY）
+1. chrome等浏览器（这个要关闭浏览器要不会报错，因为chrome运行时会锁定cookie数据库）
+2. 用cookie保存插件（比如Get cookies.txt LOCALLY）
 <img width="850" height="387" alt="image" src="https://github.com/user-attachments/assets/f8627bf5-9da0-436c-ad5d-99870a2d374c" />
 
 
