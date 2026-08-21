@@ -235,6 +235,7 @@ class MainWindow(QMainWindow):
         sel: DownloadSelection,
         is_playlist: bool,
         playlist_items: str = "",
+        entry_titles: list[str] | None = None,
     ) -> None:
         task = DownloadTask(
             url=url,
@@ -243,6 +244,7 @@ class MainWindow(QMainWindow):
             title=title,
             is_playlist=is_playlist,
             playlist_items=playlist_items,
+            entry_titles=entry_titles,
             parent=self,
         )
         self.manager.add(task)
@@ -260,12 +262,17 @@ class MainWindow(QMainWindow):
         if not ok:
             return
         sel = DownloadSelection()   # use best quality by default for batch
+        # Full titles pre-fetched from the JSON dump — the authoritative
+        # source for per-video titles at display time (progress events'
+        # info.title is unreliable across streams).
+        entry_titles = [t for t, _u in info.entries]
         self._enqueue(
             url=info.url,
             title=info.title,
             sel=sel,
             is_playlist=True,
             playlist_items=rng.strip(),
+            entry_titles=entry_titles,
         )
 
     # ----------------------------------------------------------- toolbar
@@ -282,13 +289,28 @@ class MainWindow(QMainWindow):
         t = self.manager.get(task_id)
         if not t:
             return
-        target = t.state.output_path or self.settings.output_dir
-        p = Path(target)
-        folder = str(p.parent if p.is_file() else p)
+        # Prefer the recorded output path, but it may point to an intermediate
+        # file (e.g. .f30064.mp4) that yt-dlp deleted after merging. Walk up
+        # until we find a directory that exists; fall back to the configured
+        # download directory.
+        candidate = Path(t.state.output_path) if t.state.output_path else None
+        folder: Path | None = None
+        if candidate and candidate.exists():
+            folder = candidate if candidate.is_dir() else candidate.parent
+        elif candidate:
+            walk = candidate.parent
+            while walk != walk.parent and not walk.exists():
+                walk = walk.parent
+            if walk.exists():
+                folder = walk
+        if folder is None:
+            folder = Path(self.settings.output_dir)
+            folder.mkdir(parents=True, exist_ok=True)
+
         if os.name == "nt":
-            os.startfile(folder)   # type: ignore[attr-defined]
+            os.startfile(str(folder))   # type: ignore[attr-defined]
         else:
-            subprocess.Popen(["xdg-open", folder])
+            subprocess.Popen(["xdg-open", str(folder)])
 
     # -------------------------------------------------------------- misc
 

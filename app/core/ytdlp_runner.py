@@ -2,15 +2,23 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QObject, QProcess, Signal
+from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, Signal
 
 from app.utils import paths
 
 
 class YtdlpRunner(QObject):
-    """Run a single yt-dlp.exe invocation, emitting stdout lines in real time."""
+    """Run a single yt-dlp.exe invocation, emitting stdout lines in real time.
 
-    line_received = Signal(str)      # each stdout line (already stripped of \r\n)
+    Bytes handling: we buffer raw bytes and only decode ``utf-8`` at line
+    boundaries. QProcess delivers whatever chunks the OS gives us, which can
+    slice through the middle of a multi-byte UTF-8 sequence — decoding each
+    chunk directly with ``errors='replace'`` turns those partial chunks into
+    U+FFFD characters and mangles Chinese/Japanese/emoji titles. Newline
+    bytes are always single-byte ASCII, so splitting on them first is safe.
+    """
+
+    line_received = Signal(str)      # each stdout line (no trailing \r/\n)
     stderr_received = Signal(str)    # each stderr line
     finished = Signal(int)           # exit code
     failed_to_start = Signal(str)    # error string
@@ -18,8 +26,8 @@ class YtdlpRunner(QObject):
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._proc: QProcess | None = None
-        self._stdout_buf = ""
-        self._stderr_buf = ""
+        self._stdout_buf = bytearray()
+        self._stderr_buf = bytearray()
 
     # ------------------------------------------------------------------ run
 
@@ -37,6 +45,16 @@ class YtdlpRunner(QObject):
         self._proc.setArguments(args)
         if workdir:
             self._proc.setWorkingDirectory(workdir)
+
+        # Force yt-dlp (Python) to emit UTF-8 to stdout/stderr instead of the
+        # Windows console code page. Belt & braces — the byte-buffered
+        # decoder above already tolerates the default cp936, but forcing
+        # UTF-8 here avoids yt-dlp's own translation errors on emoji etc.
+        env = QProcessEnvironment.systemEnvironment()
+        env.insert("PYTHONIOENCODING", "utf-8")
+        env.insert("PYTHONUTF8", "1")
+        env.insert("PYTHONLEGACYWINDOWSSTDIO", "0")
+        self._proc.setProcessEnvironment(env)
 
         self._proc.readyReadStandardOutput.connect(self._on_stdout)
         self._proc.readyReadStandardError.connect(self._on_stderr)
@@ -57,44 +75,53 @@ class YtdlpRunner(QObject):
 
     # -------------------------------------------------------------- signals
 
-    def _drain(self, buf: str, sig: Signal) -> str:
-        """Split ``buf`` on line breaks; emit each line; return leftover."""
-        # yt-dlp uses \r for progress updates in default mode. With --newline
-        # it emits \n between progress updates, but the tail of the last line
-        # may still lack a terminator.
-        buf = buf.replace("\r\n", "\n").replace("\r", "\n")
-        *lines, tail = buf.split("\n")
-        for line in lines:
-            if line:
-                sig.emit(line)
-        return tail
+    def _emit_line(self, line_bytes: bytes, sig: Signal) -> None:
+        if line_bytes:
+            sig.emit(line_bytes.decode("utf-8", errors="replace"))
+
+    def _drain_bytes(self, buf: bytearray, sig: Signal) -> None:
+        """Emit each complete line in ``buf``; keep unterminated tail bytes."""
+        while buf:
+            nl = buf.find(b"\n")
+            cr = buf.find(b"\r")
+            if nl == -1 and cr == -1:
+                return  # no complete line yet; keep bytes for next chunk
+
+            if nl == -1:
+                idx = cr
+                consume = 1
+            elif cr == -1:
+                idx = nl
+                consume = 1
+            else:
+                idx = min(nl, cr)
+                # Merge a \r\n pair into a single line terminator.
+                if idx == cr and idx + 1 < len(buf) and buf[idx + 1] == 0x0A:
+                    consume = 2
+                else:
+                    consume = 1
+
+            self._emit_line(bytes(buf[:idx]), sig)
+            del buf[: idx + consume]
 
     def _on_stdout(self) -> None:
         assert self._proc is not None
-        data = bytes(self._proc.readAllStandardOutput()).decode(
-            "utf-8", errors="replace"
-        )
-        self._stdout_buf = self._drain(self._stdout_buf + data, self.line_received)
+        self._stdout_buf.extend(bytes(self._proc.readAllStandardOutput()))
+        self._drain_bytes(self._stdout_buf, self.line_received)
 
     def _on_stderr(self) -> None:
         assert self._proc is not None
-        data = bytes(self._proc.readAllStandardError()).decode(
-            "utf-8", errors="replace"
-        )
-        self._stderr_buf = self._drain(
-            self._stderr_buf + data, self.stderr_received
-        )
+        self._stderr_buf.extend(bytes(self._proc.readAllStandardError()))
+        self._drain_bytes(self._stderr_buf, self.stderr_received)
 
     def _on_finished(self, code: int, _status: QProcess.ExitStatus) -> None:
-        # Flush any buffered tail lines before signalling completion.
-        for buf_attr, sig in (
-            ("_stdout_buf", self.line_received),
-            ("_stderr_buf", self.stderr_received),
-        ):
-            tail = getattr(self, buf_attr)
-            if tail:
-                sig.emit(tail)
-                setattr(self, buf_attr, "")
+        # Flush any buffered tail bytes as a final line before completing.
+        if self._stdout_buf:
+            self._emit_line(bytes(self._stdout_buf), self.line_received)
+            self._stdout_buf.clear()
+        if self._stderr_buf:
+            self._emit_line(bytes(self._stderr_buf), self.stderr_received)
+            self._stderr_buf.clear()
         self.finished.emit(code)
 
     def _on_error(self, err: QProcess.ProcessError) -> None:

@@ -21,7 +21,7 @@ class AppSettings:
 
     # --- download ---
     output_dir: str = ""                     # filled in __post_init__ if empty
-    output_template: str = "%(title).100B [%(id)s].%(ext)s"
+    output_template: str = "%(title)s.%(ext)s"
     max_concurrent: int = 3
     use_archive: bool = True
 
@@ -40,9 +40,16 @@ class AppSettings:
     # --- expert ---
     extra_args: list[str] = field(default_factory=list)
 
+    # Retired default (kept only so we can auto-migrate old configs).
+    _LEGACY_TEMPLATE = "%(title).100B [%(id)s].%(ext)s"
+
     def __post_init__(self) -> None:
         if not self.output_dir:
             self.output_dir = str(paths.default_download_dir())
+        # Migrate users who saved the previous default template — they
+        # explicitly asked for cleaner filenames without the [id] suffix.
+        if self.output_template.strip() == self._LEGACY_TEMPLATE:
+            self.output_template = "%(title)s.%(ext)s"
 
     # ---------------------------------------------------------- persist
 

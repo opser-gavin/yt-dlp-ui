@@ -63,8 +63,13 @@ def parse(json_text: str, source_url: str) -> MediaInfo:
     is_playlist = data.get("_type") == "playlist" or "entries" in data
 
     if is_playlist:
+        # Note: with --flat-playlist, entries usually only carry url/id and
+        # no title (Bilibili collections, some YouTube playlists). Leave the
+        # title empty in that case so the download-time fallback (progress
+        # event or filename) can supply a real value later — don't stuff a
+        # literal "?" placeholder that would then show up in the UI.
         entries = [
-            (e.get("title") or e.get("id") or "?", e.get("url") or e.get("webpage_url", ""))
+            (e.get("title") or "", e.get("url") or e.get("webpage_url", ""))
             for e in (data.get("entries") or [])
             if e
         ]

@@ -101,34 +101,63 @@ class QueueModel(QAbstractTableModel):
         col = index.column()
 
         if role == Qt.UserRole:
-            # Progress delegate reads percent + label here.
+            # Progress delegate reads (percent, index_label, pct_label).
             if col == COL_PROGRESS:
                 pct = st.percent if st.percent is not None else -1.0
                 if st.status == TaskStatus.DONE:
                     pct = 100.0
-                label = f"{pct:.1f}%" if pct >= 0 else "--"
-                return (pct, label)
+                pct_txt = f"{pct:.1f}%" if pct >= 0 else "--"
+                if st.is_playlist:
+                    if st.status == TaskStatus.DONE and st.playlist_count:
+                        idx_txt = str(st.playlist_count)
+                    else:
+                        idx_txt = str(st.playlist_index) if st.playlist_index else "?"
+                    cnt_txt = str(st.playlist_count) if st.playlist_count else "?"
+                    index_label = f"[{idx_txt}/{cnt_txt}]"
+                else:
+                    index_label = ""
+                return (pct, index_label, pct_txt)
             return None
 
         if role == Qt.DisplayRole:
             if col == COL_TITLE:
-                return st.title
+                return self._title_display(st)
             if col == COL_SIZE:
-                return _fmt_size(st.total)
+                return _fmt_size(st.size_display)
             if col == COL_SPEED:
                 return _fmt_speed(st.speed) if st.status == TaskStatus.RUNNING else "-"
             if col == COL_ETA:
                 return _fmt_eta(st.eta) if st.status == TaskStatus.RUNNING else "-"
             if col == COL_STATUS:
-                return _STATUS_LABEL.get(st.status, st.status.value)
+                return self._status_display(st)
 
         if role == Qt.ToolTipRole and col == COL_TITLE:
-            hint = st.output_path or st.url
+            parts = []
+            if st.is_playlist:
+                parts.append(f"合集: {st.title}")
+            parts.append(st.output_path or st.url)
             if st.error:
-                hint += "\n\n错误: " + st.error
-            return hint
+                parts.append("错误: " + st.error)
+            return "\n".join(parts)
 
         return None
+
+    # -------- display helpers --------
+
+    @staticmethod
+    def _title_display(st) -> str:
+        # For playlists, always show the (stable) playlist name — per-video
+        # titles from progress events / filenames can flap during multi-stream
+        # downloads and were causing garbled text mid-run.
+        if not st.is_playlist:
+            return st.title
+        if st.playlist_index and st.playlist_count:
+            return f"[合集 {st.playlist_index}/{st.playlist_count}] {st.title}"
+        return f"[合集] {st.title}"
+
+    @staticmethod
+    def _status_display(st) -> str:
+        return _STATUS_LABEL.get(st.status, st.status.value)
 
     # ------ helpers ------
 
@@ -157,20 +186,48 @@ class QueueModel(QAbstractTableModel):
 # ---------------------------------------------------------------- delegate
 
 class ProgressDelegate(QStyledItemDelegate):
+    """Renders `[i/n]` as a left-aligned label and the progress bar to its
+    right. Single-video rows have no index label; the bar takes the full cell.
+    """
+
     def paint(self, painter: QPainter, option, index: QModelIndex) -> None:
         payload = index.data(Qt.UserRole)
         if not payload:
             super().paint(painter, option, index)
             return
-        pct, label = payload
+
+        pct, index_label, pct_label = payload
+        painter.save()
+        cell = option.rect.adjusted(4, 3, -4, -3)
+
+        # Left label (playlist index only)
+        if index_label:
+            fm = painter.fontMetrics()
+            label_w = fm.horizontalAdvance(index_label) + 8
+            label_rect = QRect(cell.left(), cell.top(), label_w, cell.height())
+            painter.drawText(
+                label_rect,
+                Qt.AlignLeft | Qt.AlignVCenter,
+                index_label,
+            )
+            bar_rect = QRect(
+                cell.left() + label_w + 4,
+                cell.top(),
+                max(0, cell.width() - label_w - 4),
+                cell.height(),
+            )
+        else:
+            bar_rect = cell
+
         opt = QStyleOptionProgressBar()
-        opt.rect = option.rect.adjusted(4, 4, -4, -4)
+        opt.rect = bar_rect
         opt.minimum = 0
         opt.maximum = 100
         opt.progress = max(0, int(pct))
-        opt.text = label
+        opt.text = pct_label
         opt.textVisible = True
         QApplication.style().drawControl(QStyle.CE_ProgressBar, opt, painter)
+        painter.restore()
 
 
 # ------------------------------------------------------------------ view
